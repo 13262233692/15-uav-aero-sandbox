@@ -1,0 +1,13 @@
+{
+    "name": "Sensors",
+    "references": ["FlightPhysics"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "rootNamespace": "Sensors"
+}
