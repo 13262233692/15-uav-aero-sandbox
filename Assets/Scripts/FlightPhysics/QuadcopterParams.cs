@@ -26,6 +26,9 @@ namespace FlightPhysics
         [Header("Gravity")]
         public float gravity = 9.81f;
 
+        [Header("Ground Effect")]
+        public GroundEffectParams groundEffect = GroundEffectParams.Default;
+
         public MotorConfig[] GetMotorConfigs()
         {
             float l = armLength;

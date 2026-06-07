@@ -31,6 +31,9 @@ public class QuadcopterSimulator : MonoBehaviour
     private CascadedPidFlightController _flightController;
     private SimulatedImu _imu;
     private DroneInputMapper _inputMapper;
+    private GroundEffectModel _groundEffect;
+
+    private MotorConfig[] _motorConfigs;
 
     private bool _armed = false;
     private float _telemetryTimer;
@@ -46,6 +49,8 @@ public class QuadcopterSimulator : MonoBehaviour
     };
     public float[] MotorPwms => _flightController.GetMotorPwmOutputs();
     public bool IsArmed => _armed;
+    public GroundEffectResult[] GroundEffectResults => _groundEffect.Results;
+    public bool InGroundEffect => _groundEffect != null && _groundEffect.AnyInGroundEffect();
 
     private void Awake()
     {
@@ -70,11 +75,11 @@ public class QuadcopterSimulator : MonoBehaviour
         _rigidBody.state.position = transform.position;
         _rigidBody.state.attitude = transform.rotation;
 
-        MotorConfig[] motorConfigs = droneParams.GetMotorConfigs();
+        _motorConfigs = droneParams.GetMotorConfigs();
         for (int i = 0; i < 4; i++)
         {
             _motors[i] = new MotorModel();
-            _motors[i].Initialize(motorConfigs[i], droneParams.propInertia);
+            _motors[i].Initialize(_motorConfigs[i], droneParams.propInertia);
         }
 
         _flightController = new CascadedPidFlightController();
@@ -84,6 +89,9 @@ public class QuadcopterSimulator : MonoBehaviour
         _imu.Initialize(imuNoiseParams);
 
         _inputMapper = new DroneInputMapper();
+
+        _groundEffect = new GroundEffectModel();
+        _groundEffect.Initialize(droneParams.groundEffect);
     }
 
     private void Arm()
@@ -147,6 +155,8 @@ public class QuadcopterSimulator : MonoBehaviour
             _motors[i].SetPwm(pwmOutputs[i]);
         }
 
+        UpdateGroundEffect();
+
         for (int s = 0; s < physicsSubsteps; s++)
         {
             for (int i = 0; i < 4; i++)
@@ -174,6 +184,28 @@ public class QuadcopterSimulator : MonoBehaviour
         }
     }
 
+    private void UpdateGroundEffect()
+    {
+        Vector3[] motorWorldPos = new Vector3[4];
+        float[] rpms = new float[4];
+
+        for (int i = 0; i < 4; i++)
+        {
+            motorWorldPos[i] = _rigidBody.state.position +
+                QuaternionExt.RotateVector(_rigidBody.state.attitude, _motorConfigs[i].armOffset);
+            rpms[i] = _motors[i].currentRpm;
+        }
+
+        _groundEffect.UpdateAllMotors(
+            motorWorldPos,
+            _rigidBody.state.attitude,
+            _rigidBody.state.linearVelocity,
+            _motorConfigs,
+            rpms,
+            droneParams.maxRpm,
+            Time.time);
+    }
+
     private ForceMoment ComputeTotalForceMoment(RigidBodyState state)
     {
         ForceMoment total = new ForceMoment();
@@ -184,9 +216,16 @@ public class QuadcopterSimulator : MonoBehaviour
 
         Vector3 omegaBody = QuaternionExt.InverseRotateVector(state.attitude, state.angularVelocity);
 
+        GroundEffectResult[] geResults = _groundEffect.Results;
+
         for (int i = 0; i < 4; i++)
         {
             ForceMoment motorFm = _motors[i].ComputeForceMoment(omegaBody);
+
+            if (geResults[i].inGroundEffect)
+            {
+                motorFm.force *= geResults[i].thrustMultiplier;
+            }
 
             ForceMoment worldFm = new ForceMoment
             {
@@ -195,6 +234,12 @@ public class QuadcopterSimulator : MonoBehaviour
             };
 
             total = total + worldFm;
+
+            if (geResults[i].inGroundEffect)
+            {
+                total.force += geResults[i].dragForceWorld;
+                total.force += geResults[i].turbulenceForceWorld;
+            }
         }
 
         return total;
@@ -207,20 +252,29 @@ public class QuadcopterSimulator : MonoBehaviour
         Vector3 angVel = _rigidBody.state.angularVelocity;
         Vector3 euler = _imu.eulerAnglesForDisplay;
 
+        string geInfo = "";
+        if (InGroundEffect)
+        {
+            geInfo = $" GE:[{_groundEffect.Results[0].thrustMultiplier:F2},{_groundEffect.Results[1].thrustMultiplier:F2},{_groundEffect.Results[2].thrustMultiplier:F2},{_groundEffect.Results[3].thrustMultiplier:F2}]";
+        }
+
         Debug.Log(
             $"[TELEMETRY] Pos:({pos.x:F2},{pos.y:F2},{pos.z:F2}) " +
             $"Vel:({vel.x:F2},{vel.y:F2},{vel.z:F2}) " +
             $"Att:({euler.x:F1},{euler.y:F1},{euler.z:F1}) " +
             $"Rate:({angVel.x:F2},{angVel.y:F2},{angVel.z:F2}) " +
-            $"RPM:[{_motors[0].currentRpm:F0},{_motors[1].currentRpm:F0},{_motors[2].currentRpm:F0},{_motors[3].currentRpm:F0}]");
+            $"RPM:[{_motors[0].currentRpm:F0},{_motors[1].currentRpm:F0},{_motors[2].currentRpm:F0},{_motors[3].currentRpm:F0}]" +
+            geInfo);
     }
 
     private void OnDrawGizmos()
     {
         if (!showDebugGizmos || _motors == null || _motors[0] == null) return;
 
-        MotorConfig[] configs = droneParams.GetMotorConfigs();
+        MotorConfig[] configs = _motorConfigs != null ? _motorConfigs : droneParams.GetMotorConfigs();
         if (configs == null) return;
+
+        GroundEffectResult[] geResults = _groundEffect != null ? _groundEffect.Results : null;
 
         for (int i = 0; i < 4; i++)
         {
@@ -231,6 +285,15 @@ public class QuadcopterSimulator : MonoBehaviour
             float thrustNorm = _motors[i].currentRpm / Mathf.Max(droneParams.maxRpm, 1f);
             Gizmos.color = Color.green;
             Gizmos.DrawRay(armEnd, transform.up * thrustNorm * 0.5f);
+
+            if (geResults != null && geResults[i].inGroundEffect)
+            {
+                Gizmos.color = Color.cyan;
+                Gizmos.DrawRay(armEnd, Vector3.down * geResults[i].groundDistance);
+
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawRay(armEnd, Vector3.up * (geResults[i].thrustMultiplier - 1f) * 0.5f);
+            }
         }
     }
 
@@ -238,7 +301,7 @@ public class QuadcopterSimulator : MonoBehaviour
     {
         if (!_armed) return;
 
-        GUILayout.BeginArea(new Rect(10, 10, 350, 300));
+        GUILayout.BeginArea(new Rect(10, 10, 400, 320));
         GUILayout.Label("<b>Flight Telemetry</b>", new GUIStyle(GUI.skin.label) { richText = true });
 
         Vector3 euler = _imu.eulerAnglesForDisplay;
@@ -248,6 +311,15 @@ public class QuadcopterSimulator : MonoBehaviour
 
         float[] rpms = MotorRpms;
         GUILayout.Label($"M1:{rpms[0]:F0} M2:{rpms[1]:F0} M3:{rpms[2]:F0} M4:{rpms[3]:F0} RPM");
+
+        if (InGroundEffect)
+        {
+            GUI.color = Color.cyan;
+            GroundEffectResult[] ge = _groundEffect.Results;
+            GUILayout.Label($"GROUND EFFECT  Dist:[{ge[0].groundDistance:F2},{ge[1].groundDistance:F2},{ge[2].groundDistance:F2},{ge[3].groundDistance:F2}]m");
+            GUILayout.Label($"GE Mult:[{ge[0].thrustMultiplier:F3},{ge[1].thrustMultiplier:F3},{ge[2].thrustMultiplier:F3},{ge[3].thrustMultiplier:F3}]");
+            GUI.color = Color.white;
+        }
 
         GUILayout.Label($"Armed: {_armed}  Mode: {(useRK4 ? "RK4" : "Euler")}  Substeps: {physicsSubsteps}");
         GUILayout.Label("[WASD] Pitch/Roll  [QE] Yaw  [Space] Throttle  [Esc] Disarm");

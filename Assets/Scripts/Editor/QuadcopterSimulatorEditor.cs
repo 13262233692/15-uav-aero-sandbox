@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEditor;
+using FlightPhysics;
 
 [CustomEditor(typeof(QuadcopterSimulator))]
 public class QuadcopterSimulatorEditor : Editor
@@ -24,6 +25,17 @@ public class QuadcopterSimulatorEditor : Editor
 
         float[] pwms = sim.MotorPwms;
         EditorGUILayout.LabelField($"Motor PWMs: [{pwms[0]:F0}, {pwms[1]:F0}, {pwms[2]:F0}, {pwms[3]:F0}]");
+
+        EditorGUILayout.Toggle("In Ground Effect", sim.InGroundEffect);
+        if (sim.InGroundEffect)
+        {
+            GroundEffectResult[] ge = sim.GroundEffectResults;
+            if (ge != null && ge.Length >= 4)
+            {
+                EditorGUILayout.LabelField($"GE Dist: [{ge[0].groundDistance:F2}, {ge[1].groundDistance:F2}, {ge[2].groundDistance:F2}, {ge[3].groundDistance:F2}]m");
+                EditorGUILayout.LabelField($"GE Mult: [{ge[0].thrustMultiplier:F3}, {ge[1].thrustMultiplier:F3}, {ge[2].thrustMultiplier:F3}, {ge[3].thrustMultiplier:F3}]");
+            }
+        }
         EditorGUI.EndDisabledGroup();
 
         EditorGUILayout.Space(5);
